@@ -24,16 +24,16 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 num_classes = 80
 mean_std = ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
-#writer = SummaryWriter('logs')
+writer = SummaryWriter('logs')
 
 args = {
-	'resume': 'model_best.pth.tar',
-	'batch_size': 20,
+	'resume': '',
+	'batch_size': 96,
 	'weight_decay': 1e-4,
 	'momentum': 0.9,
 	'print_freq': 200,
 	'epoch_num': 60,
-	'lr': 0.01,
+	'lr': 0.0005,
 	'model': 'resnet152'
 }
 
@@ -44,6 +44,7 @@ def main():
     best_prec1 = 0
     
     model = ResNet(pretrained=True, num_classes=num_classes).cuda()
+    #model = ResNet_Places365(num_classes=num_classes).cuda()
 
     if args['resume']:
         if os.path.isfile(args['resume']):
@@ -190,6 +191,7 @@ def validate(val_loader, model, criterion, epoch):
 def submit():
 
     model = ResNet(pretrained=False, num_classes=num_classes)
+    #model = ResNet_Places365(num_classes=num_classes)
 
     model.load_state_dict(torch.load('model_best.pth.tar')['state_dict'])
 
@@ -223,8 +225,8 @@ def submit():
 
 
 if __name__ == '__main__':
-    #main()
-    submit()
+    main()
+    #submit()
 
 
 
