@@ -10,7 +10,7 @@ import torch.backends.cudnn as cudnn
 from torchvision import transforms
 from torch import optim
 from torch.autograd import Variable
-#from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 #import torchvision.models as models
 
@@ -18,7 +18,7 @@ from tensorboardX import SummaryWriter
 
 from datasets import scenedata
 from models.resnet import *
-from utils import adjust_learning_rate, save_checkpoint, AverageMeter, accuracy
+from utils import adjust_learning_rate, poly_lr_scheduler, save_checkpoint, AverageMeter, accuracy, fancy_pca, ColorJitter
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 num_classes = 80
@@ -28,13 +28,15 @@ writer = SummaryWriter('logs')
 
 args = {
 	'resume': '',
-	'batch_size': 96,
+	'batch_size': 64,
 	'weight_decay': 1e-4,
-	'momentum': 0.9,
+	'momentum': 0.95,
 	'print_freq': 200,
-	'epoch_num': 60,
-	'lr': 0.0005,
-	'model': 'resnet152'
+	'epoch_num': 80,
+	'lr': 0.001,
+	'model': 'resnet50_places365',
+        'max_iter': 40000,
+        'power': 0.9
 }
 
 
@@ -43,8 +45,7 @@ def main():
     start_epoch = 0
     best_prec1 = 0
     
-    model = ResNet(pretrained=True, num_classes=num_classes).cuda()
-    #model = ResNet_Places365(num_classes=num_classes).cuda()
+    model = ResNet_Places365(num_classes=num_classes).cuda()
 
     if args['resume']:
         if os.path.isfile(args['resume']):
@@ -63,8 +64,10 @@ def main():
 
     # data loader
     train_transforms = transforms.Compose([
-        transforms.RandomSizedCrop(256),
+        ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.2),
+        fancy_pca(mu=0, sigma=0.01),
         transforms.RandomHorizontalFlip(),
+        transforms.RandomSizedCrop(256),
         transforms.ToTensor(),
         transforms.Normalize(*mean_std),])
 
@@ -83,17 +86,20 @@ def main():
     # define loss function (criterion) and optimizer
     criterion = torch.nn.CrossEntropyLoss().cuda()
 
-    optimizer = optim.SGD(model.parameters(), args['lr'], momentum=args['momentum'],
-            weight_decay=args['weight_decay'])
-
+    optimizer = optim.SGD(model.parameters(), lr=args['lr'], weight_decay=args['weight_decay'], 
+            momentum=args['momentum'])
+    
+    #scheduler = ReduceLROnPlateau(optimizer, 'min', patience=8)
 
     for epoch in range(start_epoch, args['epoch_num']):
         adjust_learning_rate(optimizer, epoch, args['lr'])
             
         train(train_loader, model, criterion, optimizer, epoch)
             
-        prec1 = validate(val_loader, model, criterion, epoch)
-            
+        prec1, val_loss = validate(val_loader, model, criterion, epoch)
+        
+        #scheduler.step(val_loss)
+
         is_best = prec1 > best_prec1
         best_prec1 = max(prec1, best_prec1)
         save_checkpoint({
@@ -130,12 +136,12 @@ def train(train_loader, model, criterion, optimizer, epoch):
         top1.update(prec1[0], N)
         top3.update(prec3[0], N)
         
-
         optimizer.zero_grad()
         loss.backward()
         optimizer.step() 
 
         curr_iter += 1
+        #poly_lr_scheduler(optimizer, init_lr=args['lr'], iter=curr_iter, max_iter=args['max_iter'], power=args['power'])
         writer.add_scalar('train_loss', losses.avg, curr_iter)
         
         
@@ -184,14 +190,46 @@ def validate(val_loader, model, criterion, epoch):
     writer.add_scalar('val_loss', losses.avg, epoch)
     writer.add_scalar('top1_acc', top1.avg, epoch)
     writer.add_scalar('top3_acc', top3.avg, epoch)
+    model.train()
+    return top1.avg, losses.avg
 
-    return top1.avg
+
+def validation_submit():
+
+    model = ResNet_Places365(num_classes=num_classes)
+
+    model.load_state_dict(torch.load('model_best.pth.tar')['state_dict'])
+
+    model.eval().cuda()
+
+    val_transforms = transforms.Compose([
+        transforms.Scale(256),
+        transforms.CenterCrop(256),
+        transforms.ToTensor(),
+        transforms.Normalize(*mean_std),])
+
+
+    val_set = scenedata.SceneDataset('val', transform=val_transforms)
+    val_loader = DataLoader(val_set, batch_size=args['batch_size'], num_workers=4, 
+            shuffle=False, pin_memory=True)
+
+    results = []
+    for ii, data in tqdm.tqdm(enumerate(val_loader)):
+        inputs, labels = data
+        inputs = Variable(inputs, volatile=True).cuda()
+        score = model(inputs)
+        preds = score.data.topk(k=3)[1].tolist()
+        
+        results += preds
+
+    with open('val_submit_3.txt', 'w') as f:
+        for item in results:
+            f.write("%s\n" % item)
 
 
 def submit():
 
-    model = ResNet(pretrained=False, num_classes=num_classes)
-    #model = ResNet_Places365(num_classes=num_classes)
+    model = ResNet_Places365(num_classes=num_classes)
 
     model.load_state_dict(torch.load('model_best.pth.tar')['state_dict'])
 
@@ -219,7 +257,7 @@ def submit():
 
         results += result
 
-    with open('baseline.json', 'w') as f:
+    with open('final_submit.json', 'w') as f:
         json.dump(results, f)
 
 
@@ -227,6 +265,7 @@ def submit():
 if __name__ == '__main__':
     main()
     #submit()
+    #validation_submit()
 
 
 
